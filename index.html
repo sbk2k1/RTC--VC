@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebRTC Video Call</title>
+</head>
+<body>
+  <h1>WebRTC Video Call</h1>
+  <div>
+    <button id="startCall">Start Call</button>
+    <button id="joinCall">Join Call</button>
+    <button id="endCall">End Call</button>
+  </div>
+  <div id="localVideoContainer"></div>
+  <div id="remoteVideoContainer"></div>
+  <div id="callCode"></div>
+
+  <script src="https://cdn.socket.io/4.0.1/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    let localStream;
+    let remoteStream;
+    let peerConnection;
+    let callCode;
+
+    document.getElementById('startCall').addEventListener('click', startCall);
+    document.getElementById('joinCall').addEventListener('click', joinCall);
+    document.getElementById('endCall').addEventListener('click', endCall);
+
+    async function startCall() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+
+        const localVideo = document.createElement('video');
+        localVideo.srcObject = localStream;
+        localVideo.autoplay = true;
+        document.getElementById('localVideoContainer').appendChild(localVideo);
+
+        let configuration = {
+          iceServers: [
+            { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+          ]
+        };
+
+        peerConnection = new RTCPeerConnection(configuration);
+        peerConnection.addStream(localStream);
+
+        peerConnection.onaddstream = (e) => {
+          remoteStream = e.stream;
+          const remoteVideo = document.createElement('video');
+          remoteVideo.srcObject = remoteStream;
+          remoteVideo.autoplay = true;
+          document.getElementById('remoteVideoContainer').appendChild(remoteVideo);
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate == null) {
+            return;
+          }
+          // Display the local ICE candidate on the UI
+          document.getElementById('ICECandidate').innerHTML = JSON.stringify(event.candidate);
+        };
+
+        createAndSendOffer();
+
+      } catch (error) {
+        console.error('Error starting call:', error);
+      }
+    }
+
+    function createAndSendOffer() {
+      peerConnection.createOffer((offer) => {
+        return peerConnection.setLocalDescription(offer);
+      }).then(() => {
+        // Generate a random call code and send it to the signaling server
+        callCode = Math.random().toString(36).substr(2, 6).toUpperCase();
+        document.getElementById('callCode').innerHTML = `Call Code: ${callCode}`;
+
+        // Send the offer and call code to a server to be forwarded to the other peer
+        socket.emit('offer', { offer: peerConnection.localDescription, callCode });
+      });
+    }
+
+    function joinCall() {
+      const receivedCode = prompt('Enter call code:');
+      if (receivedCode) {
+        socket.emit('join', receivedCode);
+      }
+    }
+
+    socket.on('offer', async (data) => {
+      // Receive the offer from the signaling server
+      const offer = new RTCSessionDescription(data.offer);
+      callCode = data.callCode;
+
+      // Create peer connection object
+      peerConnection = new RTCPeerConnection();
+      peerConnection.onicecandidate = handleIceCandidate;
+
+      // Set remote description and create answer
+      await peerConnection.setRemoteDescription(offer);
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+
+      // Send the answer to the signaling server
+      socket.emit('answer', { answer: peerConnection.localDescription, callCode });
+    });
+
+    socket.on('answer', async (data) => {
+      // Receive the answer from the signaling server
+      const answer = new RTCSessionDescription(data.answer);
+
+      // Set the remote description
+      await peerConnection.setRemoteDescription(answer);
+    });
+
+    function handleIceCandidate(event) {
+      if (event.candidate) {
+        // Send the ICE candidate to the signaling server
+        socket.emit('iceCandidate', { candidate: event.candidate, callCode });
+      }
+    }
+
+    socket.on('iceCandidate', async (data) => {
+      // Receive the ICE candidate from the signaling server
+      const candidate = new RTCIceCandidate(data.candidate);
+
+      // Add the ICE candidate to the peer connection
+      await peerConnection.addIceCandidate(candidate);
+    });
+
+    async function endCall() {
+      // Close peer connection and clean up
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
+
+      // Stop local stream tracks
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+      }
+
+      // Remove remote video element
+      document.getElementById('localVideoContainer').innerHTML = '';
+      document.getElementById('remoteVideoContainer').innerHTML = '';
+      document.getElementById('callCode').innerHTML = '';
+    }
+  </script>
+</body>
+</html>
